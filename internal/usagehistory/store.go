@@ -65,6 +65,7 @@ type Stats struct {
 	Success          int64    `json:"success"`
 	Failed           int64    `json:"failed"`
 	SuccessRate      *float64 `json:"success_rate"`
+	CacheHitRate     *float64 `json:"cache_hit_rate"`
 	AdditionalEvents int64    `json:"additional_events"`
 	UncertainEvents  int64    `json:"uncertain_events"`
 	Tokens           Tokens   `json:"tokens"`
@@ -432,6 +433,10 @@ func (s *Stats) add(e Event) {
 }
 
 func (s *Stats) finish() {
+	if s.Tokens.Input > 0 {
+		rate := float64(s.Tokens.CacheRead) * 100 / float64(s.Tokens.Input)
+		s.CacheHitRate = &rate
+	}
 	if s.Requests > 0 {
 		rate := float64(s.Success) * 100 / float64(s.Requests)
 		s.SuccessRate = &rate

@@ -29,7 +29,7 @@ jobs:
       - name: Check persistent usage and lifecycle
         run: |
           go test -race ./internal/usagehistory ./sdk/cliproxy/usage ./internal/config
-          go test ./internal/api/handlers/management ./internal/api ./internal/managementasset ./internal/runtime/executor/helps -run 'Test(ParseUsageHistory|CredentialUsageHistory|BundledPanel|UsageReporterHomeAdditionalModelAccounting)'
+          go test ./internal/api/handlers/management ./internal/api ./internal/managementasset ./internal/runtime/executor/helps -run 'Test(ParseUsageHistory|CredentialUsageHistory|CredentialTryout|BundledPanel|UsageReporterHomeAdditionalModelAccounting)'
           go test ./sdk/cliproxy -run 'TestService(Run|Shutdown)|TestUsageHistory'
           go build -o /tmp/cli-proxy-api ./cmd/server
       - uses: actions/setup-node@v4

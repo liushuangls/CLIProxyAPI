@@ -148,6 +148,8 @@ retain the corresponding business operation's fields.
 | `/credentials/fields` | PATCH | Change credential fields. |
 | `/credentials/refresh` | POST | Refresh credentials. |
 | `/credentials/verify` | POST | Run an operator-triggered, account-pinned inference verification using an isolated session and minimal 1-token prompt. |
+| `/credentials/try/models` | GET | List text models for an `auth_index` (self branch). |
+| `/credentials/try` | POST | Run a credential-pinned multi-turn text chat (self branch). |
 | `/oauth/import?provider=vertex` | POST | Import a Vertex service account using a multipart `file` upload. |
 | `/oauth/auth-url?provider=<provider>` | GET, POST | Start built-in or plugin OAuth (supports `name`/`auth_index` for targeted credential recovery and optional `verify` opt-in). |
 | `/oauth/siwc/bind` | POST | Start SIWC binding to an existing file-backed Codex OAuth credential. |
@@ -330,7 +332,9 @@ The response includes `auth_index`, `from`, `to`, `available_since`,
 `total_events`. `models` entries contain a `model` and the same statistics as
 `totals`: `requests`, `success`, `failed`, `success_rate` (percentage or null when
 there are no attempts), `additional_events`, `uncertain_events`, and `tokens`.
-Token fields are `input`, `output`, `cache_read`, `cache_write`, `reasoning`,
+`cache_hit_rate` is a percentage calculated as summed cache-read tokens divided
+by summed input tokens, or null when there are no input tokens. It is not an
+average of individual request rates. Token fields are `input`, `output`, `cache_read`, `cache_write`, `reasoning`,
 `unclassified`, and `total`. Cache fields are subsets of input and reasoning is a
 subset of output. `total = input + output + unclassified`.
 
@@ -353,3 +357,30 @@ unreliable storage returns 503 with a stable `error` code. Storage startup error
 abort startup. The local history feature is not enabled in Home mode.
 Configuration is `observability.usage.history` (restart required); see
 [self deployment](self-deployment_CN.md).
+
+## Credential chat tryout (self branch)
+
+Both tryout routes require the management key. GET `/credentials/try/models`
+requires `auth_index` and returns `{models: [{id, label}]}` from that credential's
+registered text models. Disabled credentials return 409.
+
+POST `/credentials/try` accepts `auth_index`, `model`, `conversation_id` (nonzero
+UUID), and `messages` (alternating user/assistant text, ending with a user turn).
+It supports at most 20 user turns, 4,000 characters per user message, and 32,000
+characters of total context. Oversized or invalid history is rejected, never
+silently truncated. The request body limit is 256 KiB.
+
+Execution uses the existing manager/executor pipeline with a pinned auth ID and
+an isolated session derived from credential and conversation IDs. It honors
+credential enablement, cooldown and configured request policies and never falls
+back to another account. The default requested output budget is 1,024 tokens.
+Management headers are not forwarded to upstreams. Each call produces normal
+usage history records. Conversation text lives only in the frontend page memory;
+this feature adds no conversation store or prompt logging.
+
+The response is `{auth_index, model, text, finish_reason, elapsed_ms}`. Upstream
+errors return 502 with `credential_try_failed`, a sanitized message and
+`upstream_status`; an upstream 401 must not invalidate the management login.
+Closing the drawer or pressing Stop cancels the request context. The drawer
+retains completed turns when reopened for the same card; changing cards or
+reloading the page clears them. Start a new chat to change models.

@@ -43,6 +43,7 @@ for attempt in {1..30}; do
 done
 test "$ready" -eq 1
 grep -Fq 'auth_usage' "$smoke_dir/panel.html"
+grep -Fq 'auth_tryout' "$smoke_dir/panel.html"
 
 endpoint="$base/v8/management/observability/usage/credentials?auth_index=smoke-missing"
 unauthorized="$(curl --silent --show-error -o /dev/null --write-out '%{http_code}' "$endpoint")"

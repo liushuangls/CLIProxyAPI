@@ -562,6 +562,7 @@ func (r *UsageReporter) buildAdditionalModelRecord(model string, detail usage.De
 		return usage.Record{}, false
 	}
 	rec := r.buildRecordForModel(model, detail, false, usage.Failure{})
+	rec.AdditionalUsage = true
 	rec.RequestID = uuid.NewString()
 	if rec.HomeSelection != nil {
 		// Split billing details do not represent another scheduled request.

@@ -13,6 +13,7 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/home"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/homeplugins"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/pluginhost"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/usagehistory"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/watcher"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/wsrelay"
 	sdkaccess "github.com/router-for-me/CLIProxyAPI/v8/sdk/access"
@@ -79,6 +80,7 @@ type Service struct {
 
 	// kvStoreManaged tracks whether this service instance owns local KVStore lifecycle.
 	kvStoreManaged atomic.Bool
+	usageHistory   *usagehistory.Store
 
 	// serverErr channel for server startup/shutdown errors.
 	serverErr chan error

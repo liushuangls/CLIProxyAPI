@@ -21,6 +21,9 @@ func TestUsageReporterHomeAdditionalModelAccounting(t *testing.T) {
 			if !ok {
 				t.Fatal("missing image usage")
 			}
+			if !image.AdditionalUsage || primary.AdditionalUsage {
+				t.Fatal("side-model billing must not count as another upstream attempt")
+			}
 			if image.RequestID == "" || image.RequestID == primary.RequestID {
 				t.Fatal("primary and image usage must retain independent execution IDs")
 			}

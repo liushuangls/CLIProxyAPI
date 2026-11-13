@@ -140,6 +140,7 @@ retain the corresponding business operation's fields.
 | `/observability/logs/requests/<id>` | GET | Get a request log. |
 | `/observability/usage/api-keys` | GET | Get API-key usage. |
 | `/observability/usage/queue` | GET | Get queued usage events. |
+| `/observability/usage/credentials` | GET | Read persistent per-credential usage history (self branch). |
 | `/credentials` | GET, POST, DELETE | List, upload, or delete credential files. |
 | `/credentials/models` | GET | Get credential models. |
 | `/credentials/download` | GET | Download a credential file. |
@@ -308,3 +309,47 @@ accepts legacy, new, or mixed layouts, normalizing v8 documents on save.
 
 Plugin OAuth uses the shared v8 login endpoint. Other plugin-defined HTTP
 extensions retain their declared `/v0/management` routes.
+
+## Credential usage history (self branch)
+
+`GET /v8/management/observability/usage/credentials` uses the normal management
+key. It reads persistent history without consuming `/observability/usage/queue`.
+
+Query parameters:
+
+| Parameter | Contract |
+| --- | --- |
+| `auth_index` | Required credential identity from `GET /credentials`. |
+| `range` | `24h` (default), `7d`, or `30d`, ending at server time. |
+| `from`, `to` | Alternative explicit RFC3339 timestamps, both required; cannot be combined with `range`. The window is `[from, to)`, at most 365 days. |
+| `page` | One-based page, default 1, maximum 1,000,000. |
+| `page_size` | Default 25, maximum 100. |
+
+The response includes `auth_index`, `from`, `to`, `available_since`,
+`retention_days`, `totals`, `models`, `events`, `page`, `page_size`, and
+`total_events`. `models` entries contain a `model` and the same statistics as
+`totals`: `requests`, `success`, `failed`, `success_rate` (percentage or null when
+there are no attempts), `additional_events`, `uncertain_events`, and `tokens`.
+Token fields are `input`, `output`, `cache_read`, `cache_write`, `reasoning`,
+`unclassified`, and `total`. Cache fields are subsets of input and reasoning is a
+subset of output. `total = input + output + unclassified`.
+
+Events contain `execution_id`, `trace_id`, `timestamp` (request start),
+`provider`, `model`, `alias`, `response_model`, `additional_usage`, `failed`,
+`status_code`, `error_code`, `latency_ms`, `quality`, and `tokens`. Events are
+newest first. Each actual upstream attempt counts separately, including retries.
+Additional-model billing events contribute tokens, not attempts or success rates.
+No prompt, response body, API key, or OAuth token is included.
+
+The UI reuses returned `from`/`to` when changing pages. This fixes the selected
+time window, not an immutable snapshot: an in-flight request that started in the
+window may appear after it finishes. Totals and the page share one read
+transaction for each response. Retention applies even before disk cleanup runs;
+`available_since` also preserves the boundary of previously pruned history when
+retention is increased.
+
+Invalid queries return 400, a missing credential returns 404, and unavailable or
+unreliable storage returns 503 with a stable `error` code. Storage startup errors
+abort startup. The local history feature is not enabled in Home mode.
+Configuration is `observability.usage.history` (restart required); see
+[self deployment](self-deployment_CN.md).

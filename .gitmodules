@@ -1,0 +1,4 @@
+[submodule "management-ui"]
+	path = management-ui
+	url = https://github.com/liushuangls/Cli-Proxy-API-Management-Center.git
+	branch = self

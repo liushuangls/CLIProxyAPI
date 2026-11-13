@@ -1297,6 +1297,13 @@ observability:
     request-log: false
 
   usage:
+    # Persistent per-credential model statistics and request metadata (self branch).
+    # Independent of the export queue below. Changes require a server restart.
+    history:
+      disabled: false
+      path: "" # Default: <auth-dir>/usage-history.db; keep this on a persistent volume.
+      retention-days: 30 # 0 uses 30; maximum 365. Expired records are removed hourly.
+
     # When false, disable in-memory usage statistics aggregation
     usage-statistics-enabled: false
 

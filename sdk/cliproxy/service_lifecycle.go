@@ -83,6 +83,12 @@ func (s *Service) Run(ctx context.Context) error {
 		s.applyKVStoreConfig(cfg)
 	}
 
+	if !homeEnabled {
+		if errHistory := s.startUsageHistory(cfg); errHistory != nil {
+			return errHistory
+		}
+	}
+
 	s.applyRetryConfig(cfg)
 	s.configureCooldownStateStore(cfg)
 
@@ -400,7 +406,10 @@ func (s *Service) Shutdown(ctx context.Context) error {
 		}
 
 		helps.RetireProxyPoolPublisher(s.proxyPoolPublisher)
-		usage.StopDefault()
+		if errHistory := s.stopUsageHistory(ctx); errHistory != nil {
+			log.WithError(errHistory).Error("failed to stop usage history")
+			shutdownErr = errors.Join(shutdownErr, errHistory)
+		}
 	})
 	return shutdownErr
 }

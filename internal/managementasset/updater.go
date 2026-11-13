@@ -106,6 +106,9 @@ func runAutoUpdater(ctx context.Context) {
 }
 
 func autoUpdateSkipReason(cfg *config.Config) (string, bool) {
+	if BundledPanel() {
+		return "management panel is bundled with the image", true
+	}
 	if cfg == nil {
 		return "config not yet available", true
 	}
@@ -200,6 +203,14 @@ func EnsureLatestManagementHTML(ctx context.Context, staticDir string, proxyURL 
 		return false
 	}
 	localPath := filepath.Join(staticDir, managementAssetName)
+	if BundledPanel() {
+		info, err := os.Stat(localPath)
+		if err != nil || !info.Mode().IsRegular() {
+			log.Error("bundled management panel is missing; rebuild the self image")
+			return false
+		}
+		return true
+	}
 
 	_, _, _ = sfGroup.Do(localPath, func() (interface{}, error) {
 		lastUpdateCheckMu.Lock()
@@ -290,6 +301,9 @@ func EnsureLatestManagementHTML(ctx context.Context, staticDir string, proxyURL 
 	_, err := os.Stat(localPath)
 	return err == nil
 }
+
+// BundledPanel pins the self image UI to its source commit instead of downloading releases.
+func BundledPanel() bool { return os.Getenv("MANAGEMENT_PANEL_BUNDLED") == "true" }
 
 func ensureFallbackManagementHTML(ctx context.Context, client *http.Client, localPath string) bool {
 	data, downloadedHash, err := downloadAsset(ctx, client, defaultManagementFallbackURL)

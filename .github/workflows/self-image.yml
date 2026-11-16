@@ -26,8 +26,9 @@ jobs:
       - uses: actions/setup-go@v6
         with:
           go-version-file: go.mod
-      - name: Check persistent usage and lifecycle
+      - name: Verify backend, persistent usage and lifecycle
         run: |
+          go test ./...
           go test -race ./internal/usagehistory ./sdk/cliproxy/usage ./internal/config
           go test ./internal/api/handlers/management ./internal/api ./internal/managementasset ./internal/runtime/executor/helps -run 'Test(ParseUsageHistory|CredentialUsageHistory|CredentialTryout|BundledPanel|UsageReporterHomeAdditionalModelAccounting)'
           go test ./sdk/cliproxy -run 'TestService(Run|Shutdown)|TestUsageHistory'

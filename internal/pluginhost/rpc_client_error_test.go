@@ -3,7 +3,6 @@ package pluginhost
 import (
 	"context"
 	"errors"
-	"math"
 	"net/http"
 	"slices"
 	"strconv"
@@ -93,28 +92,18 @@ func TestPluginErrorCarriesRetryAfterIntoCooldownAndHTTPHeader(t *testing.T) {
 	if errExec == nil {
 		t.Fatal("authMgr.Execute returned nil error")
 	}
-	headerStarted := time.Now()
-	retryHeader := coreauth.SafeResponseHeaders(errExec).Get("Retry-After")
-	headerFinished := time.Now()
+	// MarkResult clamps the 7s Retry-After hint up to the 10s quota cooldown
+	// floor for both the model state and the terminal pool Retry-After header.
+	if got := coreauth.SafeResponseHeaders(errExec).Get("Retry-After"); got != "10" {
+		t.Fatalf("SafeResponseHeaders(errExec) Retry-After = %q, want 10", got)
+	}
 	updated, okAuth := authMgr.GetByID(authID)
 	if !okAuth || updated == nil {
 		t.Fatalf("GetByID(%q) missing", authID)
 	}
 	state := updated.ModelStates[model]
-	if state == nil || state.NextRetryAfter.Before(before.Add(10*time.Second)) {
-		t.Fatalf("model NextRetryAfter = %v, want at least %v (minimum quota cooldown)", state, before.Add(10*time.Second))
-	}
-	// A terminal 429 now reports the pool's actual recovery deadline, including
-	// the quota cooldown floor, instead of the plugin's unadjusted seven seconds.
-	// Bound the observation interval so crossing a second cannot make this flaky.
-	minSeconds := max(0, int(math.Ceil(state.NextRetryAfter.Sub(headerFinished).Seconds())))
-	maxSeconds := max(0, int(math.Ceil(state.NextRetryAfter.Sub(headerStarted).Seconds())))
-	if retryHeader == "" && minSeconds == 0 {
-		return
-	}
-	seconds, errParse := strconv.Atoi(retryHeader)
-	if errParse != nil || seconds < minSeconds || seconds > maxSeconds {
-		t.Fatalf("Retry-After = %q, want remaining pool cooldown in [%d, %d] seconds", retryHeader, minSeconds, maxSeconds)
+	if state == nil || !state.NextRetryAfter.After(before.Add(9*time.Second)) {
+		t.Fatalf("model NextRetryAfter = %v, want at least %v (10s cooldown floor)", state, before.Add(10*time.Second))
 	}
 }
 

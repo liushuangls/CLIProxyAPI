@@ -142,3 +142,15 @@ func TestCredentialTryoutResponsePartsAndMissingText(t *testing.T) {
 		t.Fatal("empty model response reported success")
 	}
 }
+
+func TestProviderTryoutRequiresMatchingRuntimeIDAndIndex(t *testing.T) {
+	h, a, e := tryoutFixture(t)
+	body := tryoutBody(a.EnsureIndex(), `[{"role":"user","content":"hello"}]`)
+	withID := func(id string) string { return strings.Replace(body, "{", fmt.Sprintf("{\"auth_id\":%q,", id), 1) }
+	if r := callTryout(h, withID(a.ID+"-unknown")); r.Code != 404 || len(e.ids) != 0 {
+		t.Fatalf("wrong provider accepted: %d", r.Code)
+	}
+	if r := callTryout(h, withID(a.ID)); r.Code != 200 || len(e.ids) != 1 || e.ids[0] != a.ID {
+		t.Fatalf("provider tryout: %d %v", r.Code, e.ids)
+	}
+}

@@ -38,7 +38,7 @@ func sampleEvent(id, auth string, at time.Time) usage.Record {
 }
 
 func queryFixture(store *Store, auth string) Query {
-	return Query{AuthIndex: auth, From: store.now().Add(-30 * 24 * time.Hour), To: store.now().Add(time.Second), Page: 1, PageSize: 25}
+	return Query{AuthIndexes: []string{auth}, From: store.now().Add(-30 * 24 * time.Hour), To: store.now().Add(time.Second), Page: 1, PageSize: 25}
 }
 
 func TestHistoryAccountingIsolationDeduplicationAndPagination(t *testing.T) {
@@ -142,12 +142,12 @@ func TestHistoryWindowBoundariesAndEmptySuccessRate(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	q := Query{AuthIndex: "a", From: at, To: at.Add(time.Second), Page: 1, PageSize: 25}
+	q := Query{AuthIndexes: []string{"a"}, From: at, To: at.Add(time.Second), Page: 1, PageSize: 25}
 	result, err := store.Query(t.Context(), q)
 	if err != nil || result.TotalEvents != 1 || result.Events[0].ExecutionID != "0" {
 		t.Fatalf("window is not [from,to): %+v, %v", result, err)
 	}
-	q.AuthIndex = "missing"
+	q.AuthIndexes = []string{"missing"}
 	result, err = store.Query(t.Context(), q)
 	if err != nil || result.Totals.SuccessRate != nil || result.Events == nil || result.Models == nil {
 		t.Fatalf("empty result must not invent success: %+v, %v", result, err)
@@ -203,5 +203,40 @@ func TestHistoryConcurrentReplayIsIdempotent(t *testing.T) {
 	result, err := store.Query(t.Context(), queryFixture(store, "a"))
 	if err != nil || result.TotalEvents != 10 {
 		t.Fatalf("concurrent replay double-counted: %d, %v", result.TotalEvents, err)
+	}
+}
+
+func TestProviderHistoryMergesPagesAndFiltersSharedIndexes(t *testing.T) {
+	store, _, _ := historyFixture(t, 30)
+	at := store.now()
+	events := []struct{ idx, id, provider string }{
+		{"a", "old-other", "other"}, {"a", "", "provider-a"}, {"b", "runtime-b", "provider-b"}, {"a", "other-id", "provider-a"}, {"a", "runtime-a", "provider-a"},
+	}
+	for i, sample := range events {
+		r := sampleEvent(fmt.Sprint(i), sample.idx, at.Add(time.Duration(i)*time.Millisecond))
+		r.AuthID, r.Provider = sample.id, sample.provider
+		if err := store.Append(r); err != nil {
+			t.Fatal(err)
+		}
+	}
+	q := queryFixture(store, "a")
+	q.AuthIndexes = []string{"b", "a", "a"}
+	q.Selection = map[string]*ProviderSelection{
+		"a": {IDs: map[string]bool{RuntimeIDHash("runtime-a"): true}, Providers: map[string]bool{"provider-a": true}},
+		"b": {IDs: map[string]bool{RuntimeIDHash("runtime-b"): true}, Providers: map[string]bool{"provider-b": true}},
+	}
+	q.PageSize = 2
+	page, err := store.Query(t.Context(), q)
+	if err != nil || page.TotalEvents != 3 || page.Totals.Requests != 3 || len(page.Models) != 1 || len(page.Events) != 2 || page.Events[0].ExecutionID != "4" || page.Events[1].ExecutionID != "2" {
+		t.Fatalf("page one: %+v, %v", page, err)
+	}
+	q.Page = 2
+	page, err = store.Query(t.Context(), q)
+	if err != nil || len(page.Events) != 1 || page.Events[0].ExecutionID != "1" {
+		t.Fatalf("page two: %+v, %v", page, err)
+	}
+	q.Selection["a"].AmbiguousProviders = map[string]bool{"provider-a": true}
+	if _, err = store.Query(t.Context(), q); err != ErrAmbiguousHistory {
+		t.Fatalf("ambiguous legacy record: %v", err)
 	}
 }

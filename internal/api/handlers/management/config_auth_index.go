@@ -146,12 +146,14 @@ func stripAPIKeysAuthIndexesFromGroup(group *yaml.Node) {
 	if group == nil || group.Kind != yaml.MappingNode {
 		return
 	}
+	deleteMapKey(group, "auth_id")
 	deleteMapKey(group, "auth_index")
 	deleteMapKey(group, "auth-index")
 	keysNode := configV8Node(group, []string{"keys"})
 	if keysNode != nil && keysNode.Kind == yaml.SequenceNode {
 		for _, keyNode := range keysNode.Content {
 			if keyNode != nil && keyNode.Kind == yaml.MappingNode {
+				deleteMapKey(keyNode, "auth_id")
 				deleteMapKey(keyNode, "auth_index")
 				deleteMapKey(keyNode, "auth-index")
 			}
@@ -374,6 +376,7 @@ func (h *Handler) injectV8APIKeyAuthIndexesLocked(root *yaml.Node, data []byte) 
 		return
 	}
 
+	auths = append(auths, synth.DisabledOpenAICompatibility(cfg)...)
 	liveIndexByID := liveAuthIndexFromManager(h.authManager)
 	resolveAuthIndex := func(a *coreauth.Auth) string {
 		if a == nil {
@@ -392,9 +395,15 @@ func (h *Handler) injectV8APIKeyAuthIndexesLocked(root *yaml.Node, data []byte) 
 		}
 	}
 
-	providerAuthMap := make(map[string]map[string]string)
+	setIdentity := func(node *yaml.Node, auth *coreauth.Auth) {
+		if idx := resolveAuthIndex(auth); idx != "" {
+			setMapScalar(node, "auth_index", idx)
+			setMapScalar(node, "auth_id", auth.ID)
+		}
+	}
+	providerAuthMap := make(map[string]map[string]*coreauth.Auth)
 	for _, p := range []string{"gemini", "interactions", "vertex"} {
-		providerAuthMap[p] = make(map[string]string)
+		providerAuthMap[p] = make(map[string]*coreauth.Auth)
 	}
 
 	for _, a := range authsByProvider["gemini"] {
@@ -407,7 +416,7 @@ func (h *Handler) injectV8APIKeyAuthIndexesLocked(root *yaml.Node, data []byte) 
 		}
 		e := cfg.GeminiKey[idx]
 		key := formatCredentialDedupKey(e.APIKey, e.BaseURL, e.ProxyURL, e.Prefix, e.Headers, e.ConnectionPool)
-		providerAuthMap["gemini"][key] = resolveAuthIndex(a)
+		providerAuthMap["gemini"][key] = a
 	}
 	for _, a := range authsByProvider["gemini-interactions"] {
 		if a == nil || a.Attributes == nil {
@@ -419,7 +428,7 @@ func (h *Handler) injectV8APIKeyAuthIndexesLocked(root *yaml.Node, data []byte) 
 		}
 		e := cfg.InteractionsKey[idx]
 		key := formatCredentialDedupKey(e.APIKey, e.BaseURL, e.ProxyURL, e.Prefix, e.Headers, e.ConnectionPool)
-		providerAuthMap["interactions"][key] = resolveAuthIndex(a)
+		providerAuthMap["interactions"][key] = a
 	}
 	for _, a := range authsByProvider["vertex"] {
 		if a == nil || a.Attributes == nil {
@@ -431,7 +440,7 @@ func (h *Handler) injectV8APIKeyAuthIndexesLocked(root *yaml.Node, data []byte) 
 		}
 		e := cfg.VertexCompatAPIKey[idx]
 		key := strings.TrimSpace(e.APIKey) + "|" + strings.TrimSpace(e.BaseURL) + "\x00" + config.FormatConnectionPoolDedupID(e.ConnectionPool)
-		providerAuthMap["vertex"][key] = resolveAuthIndex(a)
+		providerAuthMap["vertex"][key] = a
 	}
 
 	authByConfigIndex := make(map[string]map[string]*coreauth.Auth)
@@ -478,9 +487,7 @@ func (h *Handler) injectV8APIKeyAuthIndexesLocked(root *yaml.Node, data []byte) 
 				if keysNode == nil || keysNode.Kind != yaml.SequenceNode || len(keysNode.Content) == 0 {
 					for _, a := range auths {
 						if isOpenAICompatAuth(a) && a.Attributes["api_key"] == "" {
-							if idx := resolveAuthIndex(a); idx != "" {
-								setMapScalar(group, "auth_index", idx)
-							}
+							setIdentity(group, a)
 							break
 						}
 					}
@@ -499,9 +506,7 @@ func (h *Handler) injectV8APIKeyAuthIndexesLocked(root *yaml.Node, data []byte) 
 						continue
 					}
 					if kIdx < len(groupAuths) {
-						if idx := resolveAuthIndex(groupAuths[kIdx]); idx != "" {
-							setMapScalar(keyNode, "auth_index", idx)
-						}
+						setIdentity(keyNode, groupAuths[kIdx])
 					}
 				}
 			}
@@ -530,9 +535,7 @@ func (h *Handler) injectV8APIKeyAuthIndexesLocked(root *yaml.Node, data []byte) 
 						continue
 					}
 					if a := authByConfigIndex["claude"][targetIdx]; a != nil {
-						if idx := resolveAuthIndex(a); idx != "" {
-							setMapScalar(keyNode, "auth_index", idx)
-						}
+						setIdentity(keyNode, a)
 					}
 				}
 			}
@@ -560,9 +563,7 @@ func (h *Handler) injectV8APIKeyAuthIndexesLocked(root *yaml.Node, data []byte) 
 					targetIdx := strconv.Itoa(validIdx)
 					validIdx++
 					if a := authByConfigIndex[providerName][targetIdx]; a != nil {
-						if idx := resolveAuthIndex(a); idx != "" {
-							setMapScalar(keyNode, "auth_index", idx)
-						}
+						setIdentity(keyNode, a)
 					}
 				}
 			}
@@ -590,9 +591,7 @@ func (h *Handler) injectV8APIKeyAuthIndexesLocked(root *yaml.Node, data []byte) 
 					targetIdx := strconv.Itoa(validIdx)
 					validIdx++
 					if a := authByConfigIndex["meta"][targetIdx]; a != nil {
-						if idx := resolveAuthIndex(a); idx != "" {
-							setMapScalar(keyNode, "auth_index", idx)
-						}
+						setIdentity(keyNode, a)
 					}
 				}
 			}
@@ -616,9 +615,7 @@ func (h *Handler) injectV8APIKeyAuthIndexesLocked(root *yaml.Node, data []byte) 
 				pool := resolveInheritedConnectionPool(keyNode, group)
 				if providerName == "vertex" {
 					vertexKey := apiKey + "|" + groupBase + "\x00" + config.FormatConnectionPoolDedupID(pool)
-					if idx, ok := providerAuthMap["vertex"][vertexKey]; ok {
-						setMapScalar(keyNode, "auth_index", idx)
-					}
+					setIdentity(keyNode, providerAuthMap["vertex"][vertexKey])
 					continue
 				}
 
@@ -626,9 +623,7 @@ func (h *Handler) injectV8APIKeyAuthIndexesLocked(root *yaml.Node, data []byte) 
 				prefix := resolveInheritedScalar(keyNode, group, "prefix")
 				headers := resolveInheritedHeaders(keyNode, group, "headers")
 				dedupKey := formatCredentialDedupKey(apiKey, groupBase, proxyURL, prefix, headers, pool)
-				if idx, ok := providerAuthMap[providerName][dedupKey]; ok {
-					setMapScalar(keyNode, "auth_index", idx)
-				}
+				setIdentity(keyNode, providerAuthMap[providerName][dedupKey])
 			}
 		}
 	}

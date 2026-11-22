@@ -26,6 +26,7 @@ type tryoutMessage struct {
 }
 
 type tryoutRequest struct {
+	AuthID         string
 	AuthIndex      string
 	Model          string
 	ConversationID uuid.UUID
@@ -57,7 +58,7 @@ func credentialTryoutModels(auth *coreauth.Auth) []tryoutModel {
 	return models
 }
 
-func (h *Handler) tryoutAuth(c *gin.Context, index string) *coreauth.Auth {
+func (h *Handler) tryoutAuth(c *gin.Context, index, id string) *coreauth.Auth {
 	if h == nil || h.authManager == nil {
 		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "credential_manager_unavailable"})
 		return nil
@@ -66,7 +67,14 @@ func (h *Handler) tryoutAuth(c *gin.Context, index string) *coreauth.Auth {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid_tryout", "message": "auth_index is required"})
 		return nil
 	}
-	auth, ok := h.lookupAuthFile("", index)
+	var auth *coreauth.Auth
+	var ok bool
+	if id == "" {
+		auth, ok = h.lookupAuthFile("", index)
+	} else {
+		auth, ok = h.authManager.GetByID(id)
+		ok = ok && lockedAuthIndex(auth) == index
+	}
 	if !ok || auth == nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "credential_not_found"})
 		return nil
@@ -79,7 +87,7 @@ func (h *Handler) tryoutAuth(c *gin.Context, index string) *coreauth.Auth {
 }
 
 func (h *Handler) GetCredentialTryoutModels(c *gin.Context) {
-	auth := h.tryoutAuth(c, strings.TrimSpace(c.Query("auth_index")))
+	auth := h.tryoutAuth(c, strings.TrimSpace(c.Query("auth_index")), c.Query("auth_id"))
 	if auth == nil {
 		return
 	}
@@ -99,6 +107,12 @@ func parseTryoutRequest(raw []byte) (tryoutRequest, error) {
 		if root.Get(field).Type != ojson.String {
 			return out, fmt.Errorf("%s must be a string", field)
 		}
+	}
+	if id := root.Get("auth_id"); id.Exists() {
+		if id.Type != ojson.String || strings.TrimSpace(id.String()) == "" {
+			return out, fmt.Errorf("invalid auth_id")
+		}
+		out.AuthID = id.String()
 	}
 	out.AuthIndex = strings.TrimSpace(root.Get("auth_index").String())
 	out.Model = strings.TrimSpace(root.Get("model").String())
@@ -154,7 +168,7 @@ func (h *Handler) TryCredential(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid_tryout", "message": err.Error()})
 		return
 	}
-	auth := h.tryoutAuth(c, body.AuthIndex)
+	auth := h.tryoutAuth(c, body.AuthIndex, body.AuthID)
 	if auth == nil {
 		return
 	}

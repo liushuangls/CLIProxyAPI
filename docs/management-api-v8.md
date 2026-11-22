@@ -361,13 +361,16 @@ Query parameters:
 
 | Parameter | Contract |
 | --- | --- |
-| `auth_index` | Required credential identity from `GET /credentials`. |
+| `auth_index` | Single credential identity from `GET /credentials`. |
+| `auth_id` | Alternative provider scope. Repeat this parameter for every selected runtime credential from the JSON configuration's `api-keys` groups. A keyless endpoint exposes its ID on the group itself. |
 | `range` | `24h` (default), `7d`, or `30d`, ending at server time. |
 | `from`, `to` | Alternative explicit RFC3339 timestamps, both required; cannot be combined with `range`. The window is `[from, to)`, at most 365 days. |
 | `page` | One-based page, default 1, maximum 1,000,000. |
 | `page_size` | Default 25, maximum 100. |
 
-The response includes `auth_index`, `from`, `to`, `available_since`,
+Provider-scoped responses echo the selected `auth_ids`. Counts, rates and newest-first pages cover the entire selection in one database snapshot. A missing member returns 404. If older records share both a provider and an index across the selected and unselected credentials, the server returns 409 (`ambiguous_history`) for affected time windows.
+
+The response includes `auth_index` (or `auth_indexes` for multiple buckets), `from`, `to`, `available_since`,
 `retention_days`, `totals`, `models`, `events`, `page`, `page_size`, and
 `total_events`. `models` entries contain a `model` and the same statistics as
 `totals`: `requests`, `success`, `failed`, `success_rate` (percentage or null when
@@ -409,6 +412,8 @@ UUID), and `messages` (alternating user/assistant text, ending with a user turn)
 It supports at most 20 user turns, 4,000 characters per user message, and 32,000
 characters of total context. Oversized or invalid history is rejected, never
 silently truncated. The request body limit is 256 KiB.
+
+For a configured provider, pass its read-only `auth_id` alongside `auth_index` on both the model lookup and the chat request. The server verifies the pair before dispatch.
 
 Execution uses the existing manager/executor pipeline with a pinned auth ID and
 an isolated session derived from credential and conversation IDs. It honors

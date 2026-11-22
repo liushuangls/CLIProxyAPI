@@ -2,6 +2,7 @@ package synthesizer
 
 import (
 	"fmt"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -108,7 +109,7 @@ func (s *ConfigSynthesizer) Synthesize(ctx *SynthesisContext) ([]*coreauth.Auth,
 	// Meta API Keys
 	out = append(out, s.synthesizeMetaKeys(ctx)...)
 	// OpenAI-compat
-	out = append(out, s.synthesizeOpenAICompat(ctx)...)
+	out = append(out, s.synthesizeOpenAICompat(ctx, false)...)
 	// Vertex-compat
 	out = append(out, s.synthesizeVertexCompat(ctx)...)
 
@@ -357,8 +358,18 @@ func (s *ConfigSynthesizer) synthesizeCodexStyleKeys(ctx *SynthesisContext, entr
 	return out
 }
 
-// synthesizeOpenAICompat creates Auth entries for OpenAI-compatible providers.
-func (s *ConfigSynthesizer) synthesizeOpenAICompat(ctx *SynthesisContext) []*coreauth.Auth {
+// DisabledOpenAICompatibility derives identities for history reads without registering them for routing.
+func (s *ConfigSynthesizer) DisabledOpenAICompatibility(cfg *config.Config) []*coreauth.Auth {
+	if cfg == nil || !slices.ContainsFunc(cfg.OpenAICompatibility, func(entry config.OpenAICompatibility) bool { return entry.Disabled }) {
+		return nil
+	}
+	ctx := &SynthesisContext{Config: cfg, IDGenerator: NewStableIDGenerator()}
+	// Allocate active IDs first, as the running synthesizer does.
+	s.synthesizeOpenAICompat(ctx, false)
+	return s.synthesizeOpenAICompat(ctx, true)
+}
+
+func (s *ConfigSynthesizer) synthesizeOpenAICompat(ctx *SynthesisContext, disabled bool) []*coreauth.Auth {
 	cfg := ctx.Config
 	now := ctx.Now
 	idGen := ctx.IDGenerator
@@ -366,7 +377,7 @@ func (s *ConfigSynthesizer) synthesizeOpenAICompat(ctx *SynthesisContext) []*cor
 	out := make([]*coreauth.Auth, 0)
 	for i := range cfg.OpenAICompatibility {
 		compat := &cfg.OpenAICompatibility[i]
-		if compat.Disabled {
+		if compat.Disabled != disabled {
 			continue
 		}
 		prefix := strings.TrimSpace(compat.Prefix)

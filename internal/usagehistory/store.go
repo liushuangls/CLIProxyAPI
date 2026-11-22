@@ -3,13 +3,17 @@ package usagehistory
 
 import (
 	"bytes"
+	"container/heap"
 	"context"
+	"crypto/sha256"
 	"encoding/binary"
 	"encoding/gob"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -44,6 +48,7 @@ type Tokens struct {
 
 // Event deliberately excludes prompts, responses, API keys, and credential secrets.
 type Event struct {
+	AuthIDHash      string                       `json:"-"`
 	ExecutionID     string                       `json:"execution_id"`
 	TraceID         string                       `json:"trace_id"`
 	Timestamp       time.Time                    `json:"timestamp"`
@@ -76,16 +81,29 @@ type ModelStats struct {
 	Stats
 }
 
+// ProviderSelection restricts new records by exact runtime ID and older records
+// (which have no runtime ID hash) by their recorded provider within the credential bucket.
+type ProviderSelection struct {
+	IDs                map[string]bool
+	Providers          map[string]bool
+	AmbiguousProviders map[string]bool
+}
+
+var ErrAmbiguousHistory = errors.New("older usage records share a credential index and provider and cannot be separated")
+
 type Query struct {
-	AuthIndex string
-	From      time.Time
-	To        time.Time
-	Page      int
-	PageSize  int
+	Selection   map[string]*ProviderSelection
+	AuthIndexes []string
+	From        time.Time
+	To          time.Time
+	Page        int
+	PageSize    int
 }
 
 type Result struct {
-	AuthIndex      string       `json:"auth_index"`
+	AuthIDs        []string     `json:"auth_ids,omitempty"`
+	AuthIndex      string       `json:"auth_index,omitempty"`
+	AuthIndexes    []string     `json:"auth_indexes,omitempty"`
 	From           time.Time    `json:"from"`
 	To             time.Time    `json:"to"`
 	AvailableSince time.Time    `json:"available_since"`
@@ -213,6 +231,15 @@ func (s *Store) cutoff() time.Time {
 	return s.now().UTC().Add(-time.Duration(s.retentionDays) * 24 * time.Hour)
 }
 
+// RuntimeIDHash keeps file names and opaque credential identifiers out of stored events.
+func RuntimeIDHash(id string) string {
+	if id == "" {
+		return ""
+	}
+	digest := sha256.Sum256([]byte(id))
+	return hex.EncodeToString(digest[:])
+}
+
 // Append commits one event; execution IDs make replay idempotent per credential.
 func (s *Store) Append(record usage.Record) error {
 	index := strings.TrimSpace(record.AuthIndex)
@@ -235,6 +262,7 @@ func (s *Store) Append(record usage.Record) error {
 		return errors.New("usage history event has an invalid token breakdown")
 	}
 	event := Event{
+		AuthIDHash:  RuntimeIDHash(record.AuthID),
 		ExecutionID: record.RequestID, TraceID: record.TraceID, Timestamp: at,
 		Provider: record.Provider, Model: record.Model, Alias: record.Alias, ResponseModel: record.ResponseModel,
 		AdditionalUsage: record.AdditionalUsage || (record.HomeSelection != nil && record.HomeSelection.Additional),
@@ -323,10 +351,35 @@ func (s *Store) Prune() error {
 	})
 }
 
+// Each cursor contributes its newest remaining event. Break identical event-key
+// ties by credential so page boundaries stay stable across requests.
+type eventCursor struct {
+	cursor     *bolt.Cursor
+	key, value []byte
+	index      string
+}
+type eventCursors []eventCursor
+
+func (c eventCursors) Len() int { return len(c) }
+func (c eventCursors) Less(i, j int) bool {
+	if cmp := bytes.Compare(c[i].key, c[j].key); cmp != 0 {
+		return cmp > 0
+	}
+	return c[i].index < c[j].index
+}
+func (c eventCursors) Swap(i, j int)   { c[i], c[j] = c[j], c[i] }
+func (c *eventCursors) Push(value any) { *c = append(*c, value.(eventCursor)) }
+func (c *eventCursors) Pop() any {
+	last := len(*c) - 1
+	value := (*c)[last]
+	*c = (*c)[:last]
+	return value
+}
+
 // Query uses a single read transaction for consistent totals and newest-first pagination.
 // Time windows are [from, to); cached/reasoning tokens are never added to totals twice.
 func (s *Store) Query(ctx context.Context, q Query) (Result, error) {
-	if q.AuthIndex == "" || !q.From.Before(q.To) || q.From.UnixNano() < 0 || q.Page < 1 || q.Page > 1000000 || q.PageSize < 1 || q.PageSize > 100 {
+	if len(q.AuthIndexes) == 0 || !q.From.Before(q.To) || q.From.UnixNano() < 0 || q.Page < 1 || q.Page > 1000000 || q.PageSize < 1 || q.PageSize > 100 {
 		return Result{}, errors.New("invalid usage history query")
 	}
 	s.mu.Lock()
@@ -339,8 +392,19 @@ func (s *Store) Query(ctx context.Context, q Query) (Result, error) {
 	if s.startedAt.After(available) {
 		available = s.startedAt
 	}
-	out := Result{AuthIndex: q.AuthIndex, From: q.From.UTC(), To: q.To.UTC(), AvailableSince: available,
+	indexes := slices.Clone(q.AuthIndexes)
+	slices.Sort(indexes)
+	indexes = slices.Compact(indexes)
+	if indexes[0] == "" {
+		return Result{}, errors.New("empty credential index")
+	}
+	out := Result{From: q.From.UTC(), To: q.To.UTC(), AvailableSince: available,
 		RetentionDays: s.retentionDays, Models: []ModelStats{}, Events: []Event{}, Page: q.Page, PageSize: q.PageSize}
+	if len(indexes) == 1 {
+		out.AuthIndex = indexes[0]
+	} else {
+		out.AuthIndexes = indexes
+	}
 	from := q.From
 	// Retention is enforced on reads as well as by the hourly disk cleanup.
 	if cutoff := s.cutoff(); from.Before(cutoff) {
@@ -362,38 +426,61 @@ func (s *Store) Query(ctx context.Context, q Query) (Result, error) {
 		if retainedSince.After(from) {
 			from = retainedSince
 		}
-		auth := root.Bucket(authsBucket).Bucket([]byte(q.AuthIndex))
-		if auth == nil || !from.Before(q.To) {
+		if !from.Before(q.To) {
 			return nil
 		}
-		cursor := auth.Bucket(eventsBucket).Cursor()
-		upper, lower := timeKey(q.To), timeKey(from)
-		key, value := cursor.Seek(upper)
-		if key == nil {
-			key, value = cursor.Last()
-		} else {
-			key, value = cursor.Prev()
+		lower, upper := timeKey(from), timeKey(q.To)
+		var cursors eventCursors
+		for _, index := range indexes {
+			auth := root.Bucket(authsBucket).Bucket([]byte(index))
+			if auth == nil {
+				continue
+			}
+			cursor := auth.Bucket(eventsBucket).Cursor()
+			key, value := cursor.Seek(upper)
+			if key == nil {
+				key, value = cursor.Last()
+			} else {
+				key, value = cursor.Prev()
+			}
+			if bytes.Compare(key, lower) >= 0 {
+				cursors = append(cursors, eventCursor{cursor: cursor, key: key, value: value, index: index})
+			}
 		}
+		heap.Init(&cursors)
 		offset := (q.Page - 1) * q.PageSize
-		for ; key != nil && bytes.Compare(key, lower) >= 0; key, value = cursor.Prev() {
+		for len(cursors) > 0 {
 			if err := ctx.Err(); err != nil {
 				return err
 			}
 			var event Event
-			if err := gob.NewDecoder(bytes.NewReader(value)).Decode(&event); err != nil {
+			if err := gob.NewDecoder(bytes.NewReader(cursors[0].value)).Decode(&event); err != nil {
 				return fmt.Errorf("decode usage history event: %w", err)
 			}
-			if out.TotalEvents >= offset && len(out.Events) < q.PageSize {
-				out.Events = append(out.Events, event)
+			selection := q.Selection[cursors[0].index]
+			if selection != nil && event.AuthIDHash == "" && selection.AmbiguousProviders[event.Provider] {
+				return ErrAmbiguousHistory
 			}
-			out.TotalEvents++
-			out.Totals.add(event)
-			model := models[event.Model]
-			if model == nil {
-				model = &ModelStats{Model: event.Model}
-				models[event.Model] = model
+			if selection == nil || selection.IDs[event.AuthIDHash] || (event.AuthIDHash == "" && selection.Providers[event.Provider]) {
+				if out.TotalEvents >= offset && len(out.Events) < q.PageSize {
+					out.Events = append(out.Events, event)
+				}
+				out.TotalEvents++
+				out.Totals.add(event)
+				model := models[event.Model]
+				if model == nil {
+					model = &ModelStats{Model: event.Model}
+					models[event.Model] = model
+				}
+				model.Stats.add(event)
 			}
-			model.Stats.add(event)
+			head := &cursors[0]
+			head.key, head.value = head.cursor.Prev()
+			if bytes.Compare(head.key, lower) < 0 {
+				heap.Pop(&cursors)
+			} else {
+				heap.Fix(&cursors, 0)
+			}
 		}
 		return nil
 	})

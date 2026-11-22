@@ -18,7 +18,7 @@ import (
 func TestParseUsageHistoryQuery(t *testing.T) {
 	now := time.Date(2026, 11, 13, 0, 0, 0, 0, time.UTC)
 	for _, suffix := range []string{
-		"", "?auth_index=a&page=0", "?auth_index=a&page_size=101", "?auth_index=a&range=all",
+		"", "?auth_id=a&auth_index=b", "?auth_id=", "?auth_index=a&page=0", "?auth_index=a&page_size=101", "?auth_index=a&range=all",
 		"?auth_index=a&from=bad&to=bad", "?auth_index=a&from=2026-11-12T00:00:00Z",
 		"?auth_index=a&from=2026-11-13T00:00:00Z&to=2026-11-12T00:00:00Z",
 		"?auth_index=a&from=2026-11-12T00:00:00Z&to=2026-11-13T00:00:00Z&range=7d",
@@ -70,6 +70,12 @@ func TestCredentialUsageHistoryHandler(t *testing.T) {
 		if r.Code != 200 || ojson.Get(r.Body.String(), "totals.requests").Int() != 1 {
 			t.Fatalf("read consumed or lost history: %d %s", r.Code, r.Body.String())
 		}
+	}
+	if r := request("auth_id=fixture"); r.Code != 200 || ojson.Get(r.Body.String(), "auth_ids.0").String() != "fixture" || ojson.Get(r.Body.String(), "totals.requests").Int() != 1 {
+		t.Fatalf("provider history: %d %s", r.Code, r.Body.String())
+	}
+	if r := request("auth_id=fixture&auth_id=missing"); r.Code != 404 {
+		t.Fatalf("partial group accepted: %d", r.Code)
 	}
 	if r := request("auth_index=missing"); r.Code != 404 {
 		t.Fatalf("missing auth returned %d", r.Code)

@@ -1,6 +1,7 @@
 package management
 
 import (
+	"errors"
 	"fmt"
 	"net/http"
 	"strconv"
@@ -9,6 +10,8 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/usagehistory"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/watcher/synthesizer"
+	coreauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
 	log "github.com/sirupsen/logrus"
 )
 
@@ -36,23 +39,51 @@ func (h *Handler) GetCredentialUsageHistory(c *gin.Context) {
 		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "credential_manager_unavailable"})
 		return
 	}
-	if _, ok := h.lookupAuthFile("", q.AuthIndex); !ok {
+	ids := c.QueryArray("auth_id")
+	if len(ids) > 0 {
+		auths := manager.List()
+		h.mu.Lock()
+		auths = append(auths, synthesizer.NewConfigSynthesizer().DisabledOpenAICompatibility(h.cfg)...)
+		h.mu.Unlock()
+		if !selectProviderUsage(&q, ids, auths) {
+			c.JSON(http.StatusNotFound, gin.H{"error": "credential_not_found"})
+			return
+		}
+	} else if _, ok := h.lookupAuthFile("", q.AuthIndexes[0]); !ok {
 		c.JSON(http.StatusNotFound, gin.H{"error": "credential_not_found"})
 		return
 	}
 	result, err := store.Query(c.Request.Context(), q)
+	if errors.Is(err, usagehistory.ErrAmbiguousHistory) {
+		c.JSON(http.StatusConflict, gin.H{"error": "ambiguous_history", "message": err.Error()})
+		return
+	}
 	if err != nil {
 		log.WithError(err).Error("query credential usage history")
 		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "usage_history_incomplete", "message": "Usage history could not be read reliably. Check server logs before restarting."})
 		return
 	}
+	result.AuthIDs = ids
 	c.JSON(http.StatusOK, result)
 }
 
 func parseUsageHistoryQuery(c *gin.Context, now time.Time) (usagehistory.Query, error) {
-	q := usagehistory.Query{AuthIndex: strings.TrimSpace(c.Query("auth_index")), Page: 1, PageSize: 25, To: now}
-	if q.AuthIndex == "" || len(q.AuthIndex) > 256 {
-		return q, fmt.Errorf("auth_index is required (maximum 256 characters)")
+	q := usagehistory.Query{Page: 1, PageSize: 25, To: now}
+	indexes, ids := c.QueryArray("auth_index"), c.QueryArray("auth_id")
+	if len(ids) > 0 {
+		if len(indexes) > 0 {
+			return q, fmt.Errorf("provide auth_id or auth_index")
+		}
+		for _, id := range ids {
+			if strings.TrimSpace(id) == "" {
+				return q, fmt.Errorf("empty auth_id")
+			}
+		}
+	} else {
+		if len(indexes) != 1 || strings.TrimSpace(indexes[0]) == "" || len(indexes[0]) > 256 {
+			return q, fmt.Errorf("auth_index is required (maximum 256 characters)")
+		}
+		q.AuthIndexes = []string{strings.TrimSpace(indexes[0])}
 	}
 	from, to := c.Query("from"), c.Query("to")
 	if from != "" || to != "" {
@@ -101,4 +132,45 @@ func parseUsageHistoryQuery(c *gin.Context, now time.Time) (usagehistory.Query, 
 		}
 	}
 	return q, nil
+}
+
+// selectProviderUsage resolves the configuration's exact credentials, including
+// colliding legacy accounting indexes. An unknown member invalidates the group.
+func selectProviderUsage(q *usagehistory.Query, ids []string, auths []*coreauth.Auth) bool {
+	wanted := make(map[string]bool, len(ids))
+	for _, id := range ids {
+		wanted[id] = true
+	}
+	found := make(map[string]bool)
+	q.Selection = make(map[string]*usagehistory.ProviderSelection)
+	for _, auth := range auths {
+		if auth == nil || !wanted[auth.ID] {
+			continue
+		}
+		idx := lockedAuthIndex(auth)
+		if idx == "" {
+			continue
+		}
+		found[auth.ID] = true
+		selection := q.Selection[idx]
+		if selection == nil {
+			q.AuthIndexes = append(q.AuthIndexes, idx)
+			selection = &usagehistory.ProviderSelection{IDs: map[string]bool{}, Providers: map[string]bool{}, AmbiguousProviders: map[string]bool{}}
+			q.Selection[idx] = selection
+		}
+		selection.IDs[usagehistory.RuntimeIDHash(auth.ID)] = true
+		selection.Providers[auth.Provider] = true
+	}
+	if len(found) != len(wanted) {
+		return false
+	}
+	for _, auth := range auths {
+		if auth == nil || wanted[auth.ID] {
+			continue
+		}
+		if selection := q.Selection[lockedAuthIndex(auth)]; selection != nil && selection.Providers[auth.Provider] {
+			selection.AmbiguousProviders[auth.Provider] = true
+		}
+	}
+	return true
 }

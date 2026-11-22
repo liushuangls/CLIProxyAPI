@@ -122,6 +122,9 @@ api-keys:
 		}
 		apiKey, _ := keyMap["api-key"].(string)
 		authIndex, _ := keyMap["auth_index"].(string)
+		if id, _ := keyMap["auth_id"].(string); id == "" {
+			t.Fatal("missing provider runtime ID")
+		}
 		wantIndex := expectedIndexes["codex:"+apiKey]
 		if wantIndex == "" {
 			t.Fatalf("missing expected index for codex key %s", apiKey)
@@ -209,7 +212,7 @@ api-keys:
 	if err != nil {
 		t.Fatal(err)
 	}
-	if strings.Contains(string(saved), "auth_index") {
+	if strings.Contains(string(saved), "auth_index") || strings.Contains(string(saved), "auth_id") {
 		t.Fatal("saved config.yaml must not contain auth_index")
 	}
 

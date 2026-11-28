@@ -12,8 +12,9 @@ import (
 )
 
 func TestSnapshotAuthFileRelativeAuthDir(t *testing.T) {
-	// Keep the fixture on the working directory's volume without changing cwd.
-	authDir, errMkdirTemp := os.MkdirTemp(".", "snapshot-relative-authdir-")
+	// Stay on the same volume without changing cwd. Source scans in other
+	// test packages skip hidden directories while this fixture is in use.
+	authDir, errMkdirTemp := os.MkdirTemp(".", ".snapshot-relative-authdir-")
 	if errMkdirTemp != nil {
 		t.Fatal(errMkdirTemp)
 	}

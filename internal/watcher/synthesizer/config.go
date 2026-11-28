@@ -547,6 +547,7 @@ func (s *ConfigSynthesizer) synthesizeVertexCompat(ctx *SynthesisContext) []*cor
 			metadata["disable_cooling"] = *compat.DisableCooling
 		}
 		addRequestRetryToMetadata(compat.RequestRetry, metadata)
+		addRequestScopedErrorsToMetadata(compat.RequestScopedErrors, metadata)
 		a := &coreauth.Auth{
 			ID:         id,
 			Provider:   providerName,
